@@ -209,15 +209,127 @@ function shuffleArray(array) {
     return result;
 }
 
-// 生成位置随机偏移
-function getRandomOffset() {
+// 生成随机卡片形状
+function getRandomCardShape() {
+    const shapes = [
+        '', // 默认形状 (矩形)
+        'card-shape-oval', // 椭圆形
+        'card-shape-droplet', // 水滴形
+        'card-shape-pebble', // 鹅卵石形
+        'card-shape-cloud' // 云形
+    ];
+    return shapes[Math.floor(Math.random() * shapes.length)];
+}
+
+// 获取随机位置，避免卡片重叠
+function getRandomPosition(cardWidth, cardHeight, boardWidth, boardHeight, existingPositions) {
+    // 使用网格布局而非完全随机位置
+    const padding = 20; // 增加卡片间距
+    const columns = Math.floor(boardWidth / (cardWidth + padding * 2));
+    const rows = Math.ceil(existingPositions.length / columns) + 1;
+    
+    // 计算行和列索引
+    const totalPositions = existingPositions.length;
+    let row = Math.floor(totalPositions / columns);
+    let col = totalPositions % columns;
+    
+    // 计算整个网格的总宽度
+    const gridWidth = columns * (cardWidth + padding * 2);
+    
+    // 计算左侧留白，使卡片整体居中
+    const leftMargin = (boardWidth - gridWidth) / 2 + padding;
+    
+    // 基本位置（网格布局），添加左侧居中偏移
+    const baseX = leftMargin + col * (cardWidth + padding * 2);
+    const baseY = row * (cardHeight + padding * 2) + padding;
+    
+    // 添加小幅度随机偏移（不超过20%的卡片尺寸）
+    const offsetX = (Math.random() - 0.5) * cardWidth * 0.2;
+    const offsetY = (Math.random() - 0.5) * cardHeight * 0.2;
+    
     return {
-        x: Math.random() * 10 - 5, // -5px to 5px
-        y: Math.random() * 10 - 5  // -5px to 5px
+        x: baseX + offsetX,
+        y: baseY + offsetY
     };
 }
 
-// 单词消消乐游戏
+// 应用随机旋转
+function applyRandomRotation(element) {
+    const rotation = Math.random() * 6 - 3; // -3 to 3 degrees
+    element.style.transform += ` rotate(${rotation}deg)`;
+}
+
+// 加载页面控制
+document.addEventListener('DOMContentLoaded', function() {
+    const loadingScreen = document.getElementById('loadingScreen');
+    const loadingProgress = document.getElementById('loadingProgress');
+    
+    // 模拟加载进度
+    let progress = 0;
+    const loadingInterval = setInterval(() => {
+        progress += 10;
+        loadingProgress.textContent = `加载进度：${progress}%`;
+        
+        if (progress >= 100) {
+            clearInterval(loadingInterval);
+            loadingProgress.textContent = '加载完成，准备开始游戏！';
+            
+            // 淡出加载页面
+            setTimeout(() => {
+                loadingScreen.style.opacity = '0';
+                setTimeout(() => {
+                    loadingScreen.style.display = 'none';
+                    // 初始化游戏
+                    initGame();
+                }, 500);
+            }, 500);
+        }
+    }, 200);
+});
+
+// 初始化游戏
+function initGame() {
+    try {
+        initUnitButtons();
+        updateGameStatus('请选择单元开始游戏');
+    } catch (error) {
+        console.error('初始化游戏时出错:', error);
+        updateGameStatus('加载游戏遇到错误，请刷新页面');
+    }
+}
+
+// 优化触摸事件处理
+function addCardEventListeners(card, callback) {
+    // 支持点击和触摸
+    card.addEventListener('click', function(e) {
+        e.preventDefault();
+        callback(this);
+    });
+
+    // 触摸开始时添加活跃状态
+    card.addEventListener('touchstart', function(e) {
+        e.preventDefault();
+        this.classList.add('active');
+    }, { passive: false });
+
+    // 触摸结束时触发回调并移除活跃状态
+    card.addEventListener('touchend', function(e) {
+        e.preventDefault();
+        this.classList.remove('active');
+        callback(this);
+    }, { passive: false });
+
+    // 触摸移动到卡片外时取消操作
+    card.addEventListener('touchmove', function(e) {
+        const touch = e.touches[0];
+        const target = document.elementFromPoint(touch.clientX, touch.clientY);
+        if (target !== this) {
+            this.classList.remove('active');
+        }
+    }, { passive: true });
+}
+
+// 单词配对游戏
 function startMatchingGame() {
     if (!currentUnit) {
         alert('请先选择单元！');
@@ -242,6 +354,19 @@ function startMatchingGame() {
     // 创建游戏界面
     const container = document.createElement('div');
     container.className = 'cards-container';
+    // 设置容器为相对定位，使内部卡片的绝对定位相对于容器
+    container.style.position = 'relative';
+    // 确保容器有足够的高度
+    const cardHeight = 110;
+    const cardWidth = 130;
+    const padding = 20;
+    const columns = Math.floor((gameBoard.clientWidth - padding * 2) / (cardWidth + padding * 2));
+    const rows = Math.ceil(cards.length / columns);
+    const containerHeight = rows * (cardHeight + padding * 2) + padding * 2;
+    container.style.height = `${containerHeight}px`;
+    container.style.width = '100%';
+    
+    gameBoard.appendChild(container);
     
     // 添加匹配对数显示
     const matchedPairsEl = document.createElement('div');
@@ -249,13 +374,37 @@ function startMatchingGame() {
     matchedPairsEl.textContent = `0/${words.length}`;
     gameBoard.appendChild(matchedPairsEl);
     
-    // 为每个卡片添加随机位置偏移
+    // 游戏状态变量
+    let selected = null;
+    let matchedCount = 0;
+    let canClick = true;
+    
+    // 获取容器尺寸
+    const boardRect = container.getBoundingClientRect();
+    const boardWidth = boardRect.width;
+    const boardHeight = containerHeight;
+    
+    // 卡片位置跟踪
+    const cardPositions = [];
+    
+    // 为每个卡片添加随机特性
     cards.forEach(card => {
-        const offset = getRandomOffset();
+        // 创建卡片元素
         const cardElement = document.createElement('div');
-        cardElement.className = 'card';
-        cardElement.textContent = card.text;
+        const cardShape = getRandomCardShape();
+        cardElement.className = `card ${cardShape}`;
+        
+        // 对于特殊形状卡片，添加内部span确保文字正确显示
+        if (cardShape === 'card-shape-diamond') {
+            const span = document.createElement('span');
+            span.textContent = card.text;
+            cardElement.appendChild(span);
+        } else {
+            cardElement.textContent = card.text;
+        }
+        
         cardElement.dataset.id = card.id;
+        cardElement.dataset.word = JSON.stringify(card.word); // 存储单词数据用于匹配
         
         // 根据类型添加不同样式
         if (card.type === 'en') {
@@ -263,124 +412,139 @@ function startMatchingGame() {
             cardElement.style.fontSize = '130%'; // 放大英语单词字体30%
         }
         
-        // 应用随机位置偏移
-        cardElement.style.transform += ` translate(${offset.x}px, ${offset.y}px)`;
+        // 获取网格式布局位置，避免重叠
+        const position = getRandomPosition(cardWidth, cardHeight, boardWidth, boardHeight, cardPositions);
+        cardElement.style.position = 'absolute'; // 使用绝对定位
+        cardElement.style.left = `${position.x}px`;
+        cardElement.style.top = `${position.y}px`;
+        cardElement.style.width = `${cardWidth}px`;
+        cardElement.style.height = `${cardHeight}px`;
         
-        container.appendChild(cardElement);
-    });
-    
-    // 添加到游戏板
-    gameBoard.appendChild(container);
-    
-    // 游戏状态
-    let selected = null;
-    let matchedCount = 0;
-    let canClick = true;
-    
-    // 点击事件
-    container.addEventListener('click', function(e) {
-        if (!canClick) return;
+        // 记录位置用于后续检测
+        cardPositions.push({
+            x: position.x,
+            y: position.y,
+            width: cardWidth,
+            height: cardHeight
+        });
         
-        const cardElement = e.target.closest('.card');
-        if (!cardElement) return;
+        // 应用随机旋转
+        applyRandomRotation(cardElement);
         
-        // 找到对应的卡片数据
-        const cardId = cardElement.dataset.id;
-        const card = cards.find(c => c.id === cardId);
-        
-        // 如果已匹配或已选择，忽略
-        if (card.matched || (selected && cardId === selected.id)) return;
-        
-        if (!selected) {
-            // 第一次点击
-            selected = card;
-            cardElement.classList.add('selected');
+        // 这里正确地添加事件监听器到每个卡片
+        cardElement.addEventListener('click', function() {
+            if (!canClick) return;
+            if (selected === this) {
+                // 点击了同一张牌，取消选择
+                this.classList.remove('selected');
+                selected = null;
+                return;
+            }
             
-            // 添加选中动画
-            cardElement.animate([
-                { transform: 'scale(1)' },
-                { transform: 'scale(1.1)' },
-                { transform: 'scale(1.05)' }
-            ], {
-                duration: 300,
-                easing: 'ease-out',
-                fill: 'forwards'
-            });
-        } else {
-            // 第二次点击，检查是否匹配
-            canClick = false; // 防止连续快速点击
-            const isMatch = selected.word === card.word;
+            if (this.classList.contains('matched')) return;
             
-            // 添加选中动画
-            cardElement.classList.add('selected');
-            
-            setTimeout(() => {
-                if (isMatch) {
-                    // 匹配成功
-                    card.matched = true;
-                    selected.matched = true;
-                    
-                    // 更新UI
-                    cardElement.classList.remove('selected');
-                    cardElement.classList.add('matched');
-                    const selectedElement = document.querySelector(`.card[data-id="${selected.id}"]`);
-                    selectedElement.classList.remove('selected');
-                    selectedElement.classList.add('matched');
-                    
-                    // 播放匹配成功动画，然后让卡片消失
-                    [cardElement, selectedElement].forEach(el => {
-                        el.animate([
-                            { transform: 'scale(1)' },
-                            { transform: 'scale(1.2) rotate(5deg)' },
-                            { transform: 'scale(1.05)' }
-                        ], {
-                            duration: 500,
-                            easing: 'ease-out'
-                        }).onfinish = () => {
-                            // 动画播放完成后淡出卡片
+            if (!selected) {
+                // 第一次点击
+                selected = this;
+                this.classList.add('selected');
+                
+                // 添加选中动画
+                this.animate([
+                    { transform: this.style.transform },
+                    { transform: `${this.style.transform.replace('rotate', 'rotateZ')} scale(1.1)` },
+                    { transform: `${this.style.transform.replace('rotate', 'rotateZ')} scale(1.05)` }
+                ], {
+                    duration: 300,
+                    easing: 'ease-out',
+                    fill: 'forwards'
+                });
+            } else {
+                // 第二次点击，检查是否匹配
+                canClick = false; // 防止连续快速点击
+                const selectedWord = JSON.parse(selected.dataset.word);
+                const currentWord = JSON.parse(this.dataset.word);
+                const isMatch = selectedWord.en === currentWord.en;
+                
+                // 添加选中动画
+                this.classList.add('selected');
+                
+                setTimeout(() => {
+                    if (isMatch) {
+                        // 匹配成功
+                        this.classList.remove('selected');
+                        this.classList.add('matched');
+                        selected.classList.remove('selected');
+                        selected.classList.add('matched');
+                        
+                        // 播放匹配成功动画，然后让卡片消失
+                        [this, selected].forEach(el => {
                             el.animate([
-                                { opacity: 1 },
-                                { opacity: 0 }
+                                { transform: el.style.transform },
+                                { transform: `${el.style.transform.replace('rotate', 'rotateZ')} scale(1.2) rotate(5deg)` },
+                                { transform: `${el.style.transform.replace('rotate', 'rotateZ')} scale(1.05)` }
                             ], {
-                                duration: 300,
-                                easing: 'ease-out',
-                                fill: 'forwards'
-                            });
-                        };
-                    });
-                    
-                    matchedCount++;
-                    matchedPairsEl.textContent = `${matchedCount}/${words.length}`;
-                    updateGameStatus(`太棒了！已匹配: ${matchedCount}/${words.length} 对`);
-                    
-                    if (matchedCount === words.length) {
-                        // 所有卡片匹配成功，庆祝动画
-                        const allCards = document.querySelectorAll('.card');
-                        allCards.forEach((el, i) => {
-                            setTimeout(() => {
-                                el.classList.add('celebrate');
-                            }, i * 50);
+                                duration: 500,
+                                easing: 'ease-out'
+                            }).onfinish = () => {
+                                // 动画播放完成后淡出卡片
+                                el.animate([
+                                    { opacity: 1 },
+                                    { opacity: 0 }
+                                ], {
+                                    duration: 300,
+                                    easing: 'ease-out',
+                                    fill: 'forwards'
+                                });
+                            };
                         });
                         
+                        matchedCount++;
+                        matchedPairsEl.textContent = `${matchedCount}/${words.length}`;
+                        updateGameStatus(`太棒了！已匹配: ${matchedCount}/${words.length} 对`);
+                        
+                        if (matchedCount === words.length) {
+                            // 所有卡片匹配成功，庆祝动画
+                            const allCards = document.querySelectorAll('.card');
+                            allCards.forEach((el, i) => {
+                                setTimeout(() => {
+                                    el.classList.add('celebrate');
+                                }, i * 50);
+                            });
+                            
+                            setTimeout(() => {
+                                alert('恭喜你完成了本单元！');
+                                startMatchingGame(); // 重新开始游戏
+                            }, 1000);
+                        }
+                    } else {
+                        // 不匹配
                         setTimeout(() => {
-                            alert('恭喜你完成了本单元！');
-                            startMatchingGame(); // 重新开始游戏
-                        }, 1000);
+                            this.classList.remove('selected');
+                            selected.classList.remove('selected');
+                            updateGameStatus('不匹配，请重试');
+                        }, 800);
                     }
-                } else {
-                    // 不匹配
-                    setTimeout(() => {
-                        cardElement.classList.remove('selected');
-                        document.querySelector(`.card[data-id="${selected.id}"]`).classList.remove('selected');
-                        updateGameStatus('不匹配，请重试');
-                    }, 800);
-                }
-                
-                // 重置选择
-                selected = null;
-                canClick = true;
-            }, 500);
-        }
+                    
+                    // 重置选择
+                    selected = null;
+                    canClick = true;
+                }, 500);
+            }
+        });
+        
+        // 添加触摸事件支持
+        cardElement.addEventListener('touchstart', function(e) {
+            e.preventDefault(); // 防止滚动和缩放
+            this.classList.add('active');
+        }, { passive: false });
+        
+        cardElement.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            this.classList.remove('active');
+            this.click(); // 触发点击事件
+        }, { passive: false });
+        
+        container.appendChild(cardElement);
     });
     
     updateGameStatus(`已匹配: ${matchedCount}/${words.length} 对`);
@@ -408,150 +572,186 @@ function startMemoryGame() {
     // 洗牌
     cards = shuffleArray(cards);
     
+    // 创建游戏界面
+    const container = document.createElement('div');
+    container.className = 'cards-container';
+    // 设置容器为相对定位，使内部卡片的绝对定位相对于容器
+    container.style.position = 'relative';
+    // 确保容器有足够的高度
+    const cardHeight = 110;
+    const cardWidth = 130;
+    const padding = 20;
+    const columns = Math.floor((gameBoard.clientWidth - padding * 2) / (cardWidth + padding * 2));
+    const rows = Math.ceil(cards.length / columns);
+    const containerHeight = rows * (cardHeight + padding * 2) + padding * 2;
+    container.style.height = `${containerHeight}px`;
+    container.style.width = '100%';
+    
+    gameBoard.appendChild(container);
+    
     // 添加匹配对数显示
     const matchedPairsEl = document.createElement('div');
     matchedPairsEl.className = 'matched-pairs';
     matchedPairsEl.textContent = `0/${words.length}`;
     gameBoard.appendChild(matchedPairsEl);
     
-    // 创建游戏界面
-    const container = document.createElement('div');
-    container.className = 'cards-container';
-    
-    cards.forEach(card => {
-        const offset = getRandomOffset();
-        const cardElement = document.createElement('div');
-        cardElement.className = 'card';
-        cardElement.textContent = '?';
-        cardElement.dataset.id = card.id;
-        cardElement.dataset.text = card.text;
-        
-        // 根据类型添加不同样式
-        if (card.type === 'en') {
-            cardElement.style.fontFamily = 'Nunito, sans-serif';
-            cardElement.style.fontSize = '130%'; // 放大英语单词字体30%
-        }
-        
-        // 应用随机位置偏移
-        cardElement.style.transform += ` translate(${offset.x}px, ${offset.y}px)`;
-        
-        container.appendChild(cardElement);
-    });
-    
-    // 添加到游戏板
-    gameBoard.appendChild(container);
-    
     // 游戏状态
     let flipped = [];
     let matchedCount = 0;
     let canFlip = true;
     
-    // 点击事件
-    container.addEventListener('click', function(e) {
-        if (!canFlip) return;
+    // 获取容器尺寸
+    const boardRect = container.getBoundingClientRect();
+    const boardWidth = boardRect.width;
+    const boardHeight = containerHeight;
+    
+    // 卡片位置跟踪
+    const cardPositions = [];
+    
+    // 为每个卡片添加随机特性
+    cards.forEach(card => {
+        // 创建卡片元素
+        const cardElement = document.createElement('div');
+        const cardShape = getRandomCardShape();
+        cardElement.className = `card ${cardShape}`;
+        cardElement.textContent = '?';
+        cardElement.dataset.id = card.id;
+        cardElement.dataset.text = card.text;
+        cardElement.dataset.type = card.type;
+        cardElement.dataset.word = JSON.stringify(card.word); // 存储单词数据用于匹配
         
-        const cardElement = e.target.closest('.card');
-        if (!cardElement) return;
+        // 获取网格式布局位置，避免重叠
+        const position = getRandomPosition(cardWidth, cardHeight, boardWidth, boardHeight, cardPositions);
+        cardElement.style.position = 'absolute'; // 使用绝对定位
+        cardElement.style.left = `${position.x}px`;
+        cardElement.style.top = `${position.y}px`;
+        cardElement.style.width = `${cardWidth}px`;
+        cardElement.style.height = `${cardHeight}px`;
         
-        // 找到对应的卡片数据
-        const cardId = cardElement.dataset.id;
-        const card = cards.find(c => c.id === cardId);
-        
-        // 如果已匹配或已翻开，忽略
-        if (card.matched || card.flipped) return;
-        
-        // 翻开卡片
-        card.flipped = true;
-        cardElement.textContent = card.text;
-        cardElement.classList.add('flipped');
-        
-        // 对于英语单词卡片设置字体
-        if (card.type === 'en') {
-            cardElement.style.fontSize = '130%'; // 放大英语单词字体30%
-        }
-        
-        // 翻牌动画
-        cardElement.animate([
-            { transform: 'scale(1) rotateY(0deg)' },
-            { transform: 'scale(1.1) rotateY(90deg)', offset: 0.5 },
-            { transform: 'scale(1.05) rotateY(0deg)' }
-        ], {
-            duration: 400,
-            easing: 'ease-out'
+        // 记录位置用于后续检测
+        cardPositions.push({
+            x: position.x,
+            y: position.y,
+            width: cardWidth,
+            height: cardHeight
         });
         
-        flipped.push({card, element: cardElement});
+        // 应用随机旋转
+        applyRandomRotation(cardElement);
         
-        if (flipped.length === 2) {
-            canFlip = false;
-            const [first, second] = flipped;
-            const isMatch = first.card.word === second.card.word;
+        // 添加点击事件
+        cardElement.addEventListener('click', function() {
+            if (!canFlip || this.classList.contains('matched') || this.classList.contains('flipped')) {
+                return;
+            }
             
-            setTimeout(() => {
-                if (isMatch) {
-                    // 匹配成功
-                    first.card.matched = second.card.matched = true;
-                    first.element.classList.add('matched');
-                    second.element.classList.add('matched');
-                    
-                    // 播放匹配成功动画，但不让卡片消失
-                    [first.element, second.element].forEach(el => {
-                        el.animate([
-                            { transform: 'scale(1.05)' },
-                            { transform: 'scale(1.2) rotate(5deg)' },
-                            { transform: 'scale(1.05)' }
-                        ], {
-                            duration: 500,
-                            easing: 'ease-out'
+            // 翻开卡片
+            this.textContent = card.text;
+            this.classList.add('flipped');
+            
+            // 对于英语单词卡片设置字体
+            if (card.type === 'en') {
+                this.style.fontFamily = 'Nunito, sans-serif';
+                this.style.fontSize = '130%'; // 放大英语单词字体30%
+            }
+            
+            // 翻牌动画
+            const originalTransform = this.style.transform;
+            this.animate([
+                { transform: originalTransform },
+                { transform: `${originalTransform.replace('rotate', 'rotateZ')} rotateY(90deg)`, offset: 0.5 },
+                { transform: `${originalTransform.replace('rotate', 'rotateZ')} scale(1.05)` }
+            ], {
+                duration: 400,
+                easing: 'ease-out'
+            });
+            
+            // 添加到已翻开卡片数组
+            flipped.push({card: card, element: this});
+            
+            if (flipped.length === 2) {
+                canFlip = false;
+                const [first, second] = flipped;
+                const isMatch = first.card.word.en === second.card.word.en;
+                
+                setTimeout(() => {
+                    if (isMatch) {
+                        // 匹配成功
+                        first.element.classList.add('matched');
+                        second.element.classList.add('matched');
+                        
+                        // 播放匹配成功动画，但不让卡片消失
+                        [first.element, second.element].forEach(el => {
+                            el.animate([
+                                { transform: el.style.transform },
+                                { transform: `${el.style.transform.replace('rotate', 'rotateZ')} scale(1.2) rotate(5deg)` },
+                                { transform: `${el.style.transform.replace('rotate', 'rotateZ')} scale(1.05)` }
+                            ], {
+                                duration: 500,
+                                easing: 'ease-out'
+                            });
                         });
-                    });
-                    
-                    matchedCount++;
-                    matchedPairsEl.textContent = `${matchedCount}/${words.length}`;
-                    updateGameStatus(`太棒了！已匹配: ${matchedCount}/${words.length} 对`);
-                    
-                    if (matchedCount === words.length) {
-                        // 所有卡片匹配成功，庆祝动画
-                        const allCards = document.querySelectorAll('.card');
-                        allCards.forEach((el, i) => {
+                        
+                        matchedCount++;
+                        matchedPairsEl.textContent = `${matchedCount}/${words.length}`;
+                        updateGameStatus(`太棒了！已匹配: ${matchedCount}/${words.length} 对`);
+                        
+                        if (matchedCount === words.length) {
+                            // 所有卡片匹配成功，庆祝动画
+                            const allCards = document.querySelectorAll('.card');
+                            allCards.forEach((el, i) => {
+                                setTimeout(() => {
+                                    el.classList.add('celebrate');
+                                }, i * 50);
+                            });
+                            
                             setTimeout(() => {
-                                el.classList.add('celebrate');
-                            }, i * 50);
+                                alert('恭喜你完成了本单元！');
+                                startMemoryGame(); // 重新开始游戏
+                            }, 1000);
+                        }
+                    } else {
+                        // 不匹配，翻回
+                        // 翻回动画
+                        [first.element, second.element].forEach(el => {
+                            const transform = el.style.transform;
+                            el.animate([
+                                { transform: transform },
+                                { transform: `${transform.replace('rotate', 'rotateZ')} rotateY(90deg)`, offset: 0.5 },
+                                { transform: transform }
+                            ], {
+                                duration: 400,
+                                easing: 'ease-in'
+                            });
                         });
                         
                         setTimeout(() => {
-                            alert('恭喜你完成了本单元！');
-                            startMemoryGame(); // 重新开始游戏
-                        }, 1000);
+                            first.element.textContent = second.element.textContent = '?';
+                            first.element.classList.remove('flipped');
+                            second.element.classList.remove('flipped');
+                            updateGameStatus('不匹配，请重试');
+                        }, 200);
                     }
-                } else {
-                    // 不匹配，翻回
-                    first.card.flipped = second.card.flipped = false;
                     
-                    // 翻回动画
-                    [first.element, second.element].forEach(el => {
-                        el.animate([
-                            { transform: 'scale(1.05) rotateY(0deg)' },
-                            { transform: 'scale(1.1) rotateY(90deg)', offset: 0.5 },
-                            { transform: 'scale(1) rotateY(0deg)' }
-                        ], {
-                            duration: 400,
-                            easing: 'ease-in'
-                        });
-                    });
-                    
-                    setTimeout(() => {
-                        first.element.textContent = second.element.textContent = '?';
-                        first.element.classList.remove('flipped');
-                        second.element.classList.remove('flipped');
-                        updateGameStatus('不匹配，请重试');
-                    }, 200);
-                }
-                
-                flipped = [];
-                canFlip = true;
-            }, 800);
-        }
+                    flipped = [];
+                    canFlip = true;
+                }, 800);
+            }
+        });
+        
+        // 添加触摸事件支持
+        cardElement.addEventListener('touchstart', function(e) {
+            e.preventDefault(); // 防止滚动和缩放
+            this.classList.add('active');
+        }, { passive: false });
+        
+        cardElement.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            this.classList.remove('active');
+            this.click(); // 触发点击事件
+        }, { passive: false });
+        
+        container.appendChild(cardElement);
     });
     
     updateGameStatus(`已匹配: ${matchedCount}/${words.length} 对`);
@@ -617,13 +817,13 @@ function startSpellingGame() {
         // 确保输入框获得焦点
         setTimeout(() => input.focus(), 100);
         
-        // 事件处理
+        // 检查答案函数
         function checkAnswer() {
-            const userInput = input.value.trim();
+            const userInput = input.value.trim().toLowerCase();
             if (!userInput) return;
             
             const currentWord = words[currentWordIndex];
-            if (userInput.toLowerCase() === currentWord.en.toLowerCase()) {
+            if (userInput === currentWord.en.toLowerCase()) {
                 correctCount++;
                 
                 // 正确动画
@@ -672,13 +872,25 @@ function startSpellingGame() {
             }
         }
         
+        // 键盘事件
         input.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 checkAnswer();
             }
         });
         
+        // 点击事件
         submitBtn.addEventListener('click', checkAnswer);
+        
+        // 触摸事件支持（针对移动设备）
+        submitBtn.addEventListener('touchstart', function(e) {
+            e.preventDefault(); // 防止滚动和缩放
+        }, { passive: false });
+        
+        submitBtn.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            checkAnswer();
+        }, { passive: false });
         
         updateGameStatus(`请拼写单词（${currentWordIndex + 1}/${words.length}）`);
     }
@@ -686,12 +898,9 @@ function startSpellingGame() {
     renderGame();
 }
 
-// 初始化游戏
-window.onload = function() {
-    try {
-        initUnitButtons();
-        updateGameStatus('请选择单元开始游戏');
-    } catch (error) {
-        console.error('初始化游戏时出错:', error);
-    }
-}; 
+// 错误处理
+window.addEventListener('error', function(event) {
+    console.error('页面错误:', event.message);
+    // 报告错误但允许页面继续运行
+    event.preventDefault();
+}); 
